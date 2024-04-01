@@ -11,10 +11,10 @@ import {
 	Setting,
 	SearchComponent,
 } from "obsidian";
-import format from "date-fns/format";
-import parse from "date-fns/parse";
-import add from "date-fns/add";
-import isAfter from "date-fns/isAfter";
+import { format } from "date-fns/format";
+import { parse } from "date-fns/parse";
+import { add } from "date-fns/add";
+import { isAfter } from "date-fns/isAfter";
 // Remember to rename these classes and interfaces!
 
 interface ToolKitSettings {
