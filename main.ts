@@ -1,89 +1,291 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-
+import {
+	App,
+	Editor,
+	MarkdownView,
+	Modal,
+	Notice,
+	Plugin,
+	TAbstractFile,
+	TFile,
+	PluginSettingTab,
+	Setting,
+	SearchComponent,
+} from "obsidian";
+import format from "date-fns/format";
+import parse from "date-fns/parse";
+import add from "date-fns/add";
+import isAfter from "date-fns/isAfter";
 // Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
+interface ToolKitSettings {
 	mySetting: string;
+	renaming: boolean;
+	dateFormat: string;
+	headerUpdated: string;
+	minMinutesBetweenSaves: number;
+	// Union because of legacy
+	ignoreGlobalFolder?: string | string[];
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: ToolKitSettings = {
+	mySetting: "default",
+	renaming: false,
+	dateFormat: "yyyy-MM-dd'T'HH:mm",
+	headerUpdated: "modified",
+	minMinutesBetweenSaves: 1,
+	ignoreGlobalFolder: [],
+};
+function isImage(file: TFile): boolean {
+	const IMAGE_EXTS = [
+		"jpg",
+		"jpeg",
+		"png",
+		"webp",
+		"heic",
+		"tif",
+		"tiff",
+		"bmp",
+		"svg",
+		"gif",
+		"mov",
+	];
+	return IMAGE_EXTS.includes(file.extension.toLowerCase());
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+function isTFile(value: TAbstractFile): value is TFile {
+	return "stat" in value;
+}
 
+export default class ToolKitPlugin extends Plugin {
+	settings: ToolKitSettings;
+
+	pasteListener: (event: ClipboardEvent) => void;
+	dropListener: () => void;
+
+	// Workaround since the first version of the plugin had a single string for
+	// the option
+	getIgnoreFolders(): string[] {
+		if (typeof this.settings.ignoreGlobalFolder === "string") {
+			return [this.settings.ignoreGlobalFolder];
+		}
+		return this.settings.ignoreGlobalFolder ?? [];
+	}
+	parseDate(input: number | string): Date | undefined {
+		if (typeof input === "string") {
+			try {
+				const parsedDate = parse(
+					input,
+					this.settings.dateFormat,
+					new Date()
+				);
+
+				if (isNaN(parsedDate.getTime())) {
+					return undefined;
+				}
+
+				return parsedDate;
+			} catch (e) {
+				console.error(e);
+				return undefined;
+			}
+		}
+		return new Date(input);
+	}
+	formatDate(input: Date): string | number {
+		const output = format(input, this.settings.dateFormat);
+		return output;
+	}
+	shouldUpdateValue(currentMtime: Date, updateHeader: Date): boolean {
+		const nextUpdate = add(updateHeader, {
+			minutes: this.settings.minMinutesBetweenSaves,
+		});
+		this.log(`${nextUpdate}`);
+		this.log(`${currentMtime}`);
+		return isAfter(currentMtime, nextUpdate);
+	}
+	async shouldFileBeIgnored(file: TFile): Promise<boolean> {
+		if (!file.path) {
+			return true;
+		}
+		if (file.extension != "md") {
+			return true;
+		}
+		// Canvas files are created as 'Canvas.md',
+		// so the plugin will update "frontmatter" and break the file when it gets created
+		if (file.name == "Canvas.md") {
+			return true;
+		}
+
+		const fileContent = (await this.app.vault.read(file)).trim();
+
+		if (fileContent.length === 0) {
+			return true;
+		}
+
+		const isExcalidrawFile = this.isExcalidrawFile(file);
+
+		if (isExcalidrawFile) {
+			return true;
+		}
+		const ignores = this.getIgnoreFolders();
+		if (!ignores) {
+			return false;
+		}
+
+		return ignores.some((ignoreItem) => file.path.startsWith(ignoreItem));
+	}
+	isExcalidrawFile(file: TFile): boolean {
+		const ea: any =
+			//@ts-expect-error this is comming from global context, injected by Excalidraw
+			typeof ExcalidrawAutomate === "undefined"
+				? undefined
+				: //@ts-expect-error this is comming from global context, injected by Excalidraw
+				  ExcalidrawAutomate; //ea will be undefined if the Excalidraw plugin is not running
+		return ea ? ea.isExcalidrawFile(file) : false;
+	}
+
+	async handleFileChange(
+		file: TAbstractFile
+	): Promise<
+		| { status: "ok" }
+		| { status: "error"; error: any }
+		| { status: "ignored" }
+	> {
+		if (!isTFile(file)) {
+			return { status: "ignored" };
+		}
+
+		if (await this.shouldFileBeIgnored(file)) {
+			return { status: "ignored" };
+		}
+
+		try {
+			await this.app.fileManager.processFrontMatter(
+				file,
+				(frontmatter) => {
+					const updatedKey = this.settings.headerUpdated;
+					this.log("current metadata: ", frontmatter);
+					this.log("current stat: ", file.stat);
+
+					const mTime = this.parseDate(file.stat.mtime);
+
+					if (!mTime) {
+						return;
+					}
+
+					const currentMTimeOnFile = this.parseDate(
+						frontmatter[updatedKey]
+					);
+
+					if (!frontmatter[updatedKey] || !currentMTimeOnFile) {
+						frontmatter[updatedKey] = this.formatDate(mTime);
+						this.log("No frontmatter");
+						return;
+					}
+
+					if (this.shouldUpdateValue(mTime, currentMTimeOnFile)) {
+						frontmatter[updatedKey] = this.formatDate(mTime);
+						this.log("should update");
+						return;
+					}
+				}
+			);
+		} catch (e: any) {
+			if (e?.name === "YAMLParseError") {
+				const errorMessage = `Update time on edit failed
+	Malformed frontamtter on this file : ${file.path}
+	
+	${e.message}`;
+				new Notice(errorMessage, 4000);
+				console.error(errorMessage);
+				return {
+					status: "error",
+					error: e,
+				};
+			}
+		}
+		return {
+			status: "ok",
+		};
+	}
 	async onload() {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
+			id: "rename-all-image-url",
+			name: "Rename All Image Url",
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
+				const cursor = editor.getCursor();
+				const currentLine = cursor.line;
+				const docContent = editor.getValue();
+				const newContent = docContent.replace(
+					/\!\[\[([^|\]]+)(?:\|([^\]]+))?\]\]/g,
+					(_, alt, url) => {
+						// 如果没有提供 url，则 alt 即为 url
+						if (!url) {
+							url = alt;
+							alt = "";
+						}
+						return `![${alt}](${url})`;
 					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
+				);
+				editor.setValue(newContent);
+				editor.setCursor({ line: currentLine, ch: 0 });
+				// Ensure the current line is in a visible position
+				editor.scrollIntoView({
+					from: { line: currentLine, ch: 0 },
+					to: { line: currentLine, ch: 0 },
+				});
+			},
 		});
 
+		this.registerEvent(
+			this.app.vault.on("modify", (file) => {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (activeFile === file) {
+					return this.handleFileChange(file);
+				}
+			})
+		);
+
+		this.pasteListener = (event: ClipboardEvent) => {};
+
+		this.dropListener = () => {};
+
+		this.app.workspace.onLayoutReady(() => {
+			document.addEventListener("paste", this.pasteListener);
+			document.addEventListener("drop", this.dropListener);
+		});
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new ToolkitSettingTab(this.app, this));
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
+		this.registerDomEvent(document, "click", (evt: MouseEvent) => {
+			console.log("click", evt);
 		});
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		this.registerInterval(
+			window.setInterval(() => console.log("setInterval"), 5 * 60 * 1000)
+		);
 	}
-
 	onunload() {
-
+		// Remove event listener for contextmenu event on image elements
+		// Remove the event listeners when the plugin is unloaded
+		document.removeEventListener("paste", this.pasteListener);
+		document.removeEventListener("drop", this.dropListener);
 	}
-
+	log(...data: any[]) {
+		return;
+		console.log("[UTOE]:", ...data);
+	}
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings = Object.assign(
+			{},
+			DEFAULT_SETTINGS,
+			await this.loadData()
+		);
 	}
 
 	async saveSettings() {
@@ -91,44 +293,172 @@ export default class MyPlugin extends Plugin {
 	}
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+class ToolkitSettingTab extends PluginSettingTab {
+	plugin: ToolKitPlugin;
 
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: ToolKitPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
 
 	display(): void {
-		const {containerEl} = this;
+		const { containerEl } = this;
 
 		containerEl.empty();
 
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+		this.addExcludedFoldersSetting();
+		this.addTimeBetweenUpdates();
+		this.addDateFormat();
+		this.addFrontMatterUpdated();
+	}
+
+	addDateFormat(): void {
+		this.createDateFormatEditor({
+			getValue: () => this.plugin.settings.dateFormat,
+			name: "Date format",
+			description: "The date format for read and write",
+			setValue: (newValue) =>
+				(this.plugin.settings.dateFormat = newValue),
+		});
+	}
+
+	createDateFormatEditor({
+		description,
+		name,
+		getValue,
+		setValue,
+	}: DateFormatArgs) {
+		const createDoc = () => {
+			const descr = document.createDocumentFragment();
+			descr.append(
+				description,
+				descr.createEl("br"),
+				"Check ",
+				descr.createEl("a", {
+					href: "https://date-fns.org/v2.25.0/docs/format",
+					text: "date-fns documentation",
+				}),
+				descr.createEl("br"),
+				`Currently: ${format(new Date(), getValue())}`,
+				descr.createEl("br"),
+				`Obsidian default format for date properties: yyyy-MM-dd'T'HH:mm`
+			);
+			return descr;
+		};
+		let dformat = new Setting(this.containerEl)
+			.setName(name)
+			.setDesc(createDoc())
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_SETTINGS.dateFormat)
+					.setValue(getValue())
+					.onChange(async (value) => {
+						setValue(value);
+						dformat.setDesc(createDoc());
+						await this.plugin.saveSettings();
+					})
+			);
+	}
+	addTimeBetweenUpdates(): void {
+		new Setting(this.containerEl)
+			.setName("Minimum number of minutes between update")
+			.setDesc("If your files are updating too often, increase this.")
+			.addSlider((slider) =>
+				slider
+					.setLimits(1, 30, 1)
+					.setValue(this.plugin.settings.minMinutesBetweenSaves)
+					.onChange(async (value) => {
+						this.plugin.settings.minMinutesBetweenSaves = value;
+						await this.plugin.saveSettings();
+					})
+					.setDynamicTooltip()
+			);
+	}
+	addFrontMatterUpdated(): void {
+		new Setting(this.containerEl)
+			.setName("Front matter updated name")
+			.setDesc("The key in the front matter yaml for the update time.")
+			.addText((text) =>
+				text
+					.setPlaceholder("updated")
+					.setValue(this.plugin.settings.headerUpdated ?? "")
+					.onChange(async (value) => {
+						this.plugin.settings.headerUpdated = value;
+						await this.plugin.saveSettings();
+					})
+			);
+	}
+	addExcludedFoldersSetting(): void {
+		this.doSearchAndRemoveList({
+			currentList: this.plugin.getIgnoreFolders(),
+			setValue: async (newValue) => {
+				this.plugin.settings.ignoreGlobalFolder = newValue;
+			},
+			name: "Folder to exclude of all updates",
+			description:
+				"Any file updated in this folder will not trigger an updated and created update.",
+		});
+	}
+	doSearchAndRemoveList({
+		currentList,
+		setValue,
+		description,
+		name,
+	}: ArgsSearchAndRemove) {
+		let searchInput: SearchComponent | undefined;
+		new Setting(this.containerEl)
+			.setName(name)
+			.setDesc(description)
+			.addSearch((cb) => {
+				searchInput = cb;
+				cb.setPlaceholder("Example: folder1/folder2");
+				// @ts-ignore
+				cb.containerEl.addClass("time_search");
+			})
+			.addButton((cb) => {
+				cb.setIcon("plus");
+				cb.setTooltip("Add folder");
+				cb.onClick(async () => {
+					if (!searchInput) {
+						return;
+					}
+					const newFolder = searchInput.getValue();
+
+					await setValue([...currentList, newFolder]);
 					await this.plugin.saveSettings();
-				}));
+					searchInput.setValue("");
+					this.display();
+				});
+			});
+
+		currentList.forEach((ignoreFolder) =>
+			new Setting(this.containerEl)
+				.setName(ignoreFolder)
+				.addButton((button) =>
+					button.setButtonText("Remove").onClick(async () => {
+						await setValue(
+							currentList.filter(
+								(value) => value !== ignoreFolder
+							)
+						);
+						await this.plugin.saveSettings();
+						this.display();
+					})
+				)
+		);
 	}
 }
+
+type DateFormatArgs = {
+	getValue: () => string;
+	setValue: (newValue: string) => void;
+	name: string;
+	description: string;
+};
+
+type ArgsSearchAndRemove = {
+	name: string;
+	description: string;
+	currentList: string[];
+	setValue: (newValue: string[]) => Promise<void>;
+};
