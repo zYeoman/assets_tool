@@ -1,9 +1,9 @@
 {
-	"id": "assets-toolkit",
-	"name": "Assets Toolkit",
-	"version": "1.0.0",
+	"id": "yeo-toolkit",
+	"name": "Yeo's Toolkit",
+	"version": "0.1.0",
 	"minAppVersion": "0.15.0",
-	"description": "Assets 重命名等配置",
+	"description": "Yeo 的工具箱",
 	"author": "zYeoman",
 	"authorUrl": "https://github.com/zYeoman",
 	"fundingUrl": "https://obsidian.md/pricing",
