@@ -1,7 +1,7 @@
 {
 	"id": "yeo-toolkit",
 	"name": "Yeo's Toolkit",
-	"version": "0.1.0",
+	"version": "0.1.2",
 	"minAppVersion": "0.15.0",
 	"description": "Yeo 的工具箱",
 	"author": "zYeoman",
