@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-assets-tookit",
-	"version": "1.0.0",
-	"description": "Assets 重命名等配置",
+	"name": "obsidian-yeos-tookit",
+	"version": "1.0.3",
+	"description": "Yeo 的工具箱",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

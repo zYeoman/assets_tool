@@ -2,7 +2,6 @@ import {
 	App,
 	Editor,
 	MarkdownView,
-	Modal,
 	Notice,
 	Plugin,
 	TAbstractFile,
@@ -208,6 +207,16 @@ export default class ToolKitPlugin extends Plugin {
 			status: "ok",
 		};
 	}
+	getFiles() {
+		const resolvedLinks = this.app.metadataCache.resolvedLinks;
+		const currentMd = this.app.workspace.getActiveFile() as TFile;
+		for (const [mdFile, links] of Object.entries(resolvedLinks)) {
+			if (currentMd.path === mdFile) {
+				return links;
+			}
+		}
+		return null;
+	}
 	async onload() {
 		await this.loadSettings();
 
@@ -218,18 +227,26 @@ export default class ToolKitPlugin extends Plugin {
 				const cursor = editor.getCursor();
 				const currentLine = cursor.line;
 				const docContent = editor.getValue();
-				const newContent = docContent.replace(
-					/\!\[\[([^|\]]+)(?:\|([^\]]+))?\]\]/g,
-					(_, alt, url) => {
-						// 如果没有提供 url，则 alt 即为 url
-						if (!url) {
-							url = alt;
-							alt = "";
+				const files = this.getFiles();
+				if (files !== null) {
+					const newContent = docContent.replace(
+						/\!\[\[([^|\]]+)(?:\|([^\]]+))?\]\]/g,
+						(_, url, alt) => {
+							if (!alt) {
+								alt = "";
+							}
+							let new_url = "";
+							for (const [filePath, nr] of Object.entries(files)) {
+								if (filePath.includes(url)) {
+									new_url = filePath;
+								}
+							}
+							return `![${alt}](${encodeURI(new_url)})`;
 						}
-						return `![${alt}](${url})`;
-					}
-				);
-				editor.setValue(newContent);
+					);
+					editor.setValue(newContent);
+				}
+
 				editor.setCursor({ line: currentLine, ch: 0 });
 				// Ensure the current line is in a visible position
 				editor.scrollIntoView({
