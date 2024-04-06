@@ -235,13 +235,14 @@ export default class ToolKitPlugin extends Plugin {
 							if (!alt) {
 								alt = "";
 							}
-							let new_url = "";
+							let new_url = url;
 							for (const [filePath, nr] of Object.entries(files)) {
 								if (filePath.includes(url)) {
 									new_url = filePath;
+                  break;
 								}
 							}
-							return `![${alt}](${encodeURI(new_url)})`;
+							return `![${alt}](${new_url.replace(" ", "%20")})`;
 						}
 					);
 					editor.setValue(newContent);

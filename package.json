@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-yeos-tookit",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"description": "Yeo 的工具箱",
 	"main": "main.js",
 	"scripts": {
